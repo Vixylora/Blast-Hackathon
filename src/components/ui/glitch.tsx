@@ -1,220 +1,204 @@
-import type React from "react"
-import { forwardRef } from "react"
-import { Shader } from "react-shaders"
-import { cn } from "@/lib/utils"
+"use client"
 
-export interface GlitchShadersProps extends React.HTMLAttributes<HTMLDivElement> {
-  /**
-   * Glitch animation speed
-   * @default 1.0
-   */
-  speed?: number
+import { useEffect, useRef, useState, useMemo } from "react"
+import { cn } from "./utils"
 
-  /**
-   * Overall corruption intensity
-   * @default 1.0
-   */
+export interface GlitchBackgroundProps {
+  className?: string
+  children?: React.ReactNode
+  /** Base color */
+  color?: string
+  /** Glitch intensity (0.5-2) */
   intensity?: number
-
-  /**
-   * Data moshing displacement strength
-   * @default 1.0
-   */
-  distortion?: number
-
-  /**
-   * Color corruption cycling speed
-   * @default 1.0
-   */
-  colorShift?: number
-
-  /**
-   * Scan line density multiplier
-   * @default 1.0
-   */
-  scanlines?: number
+  /** Show scanlines */
+  scanlines?: boolean
 }
 
-const fragmentShader = `
-// Hash function for pseudo-random values
-float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-}
+export function GlitchBackground({
+  className,
+  children,
+  color = "#00ffff",
+  intensity = 1,
+  scanlines = true,
+}: GlitchBackgroundProps) {
+  const [glitchState, setGlitchState] = useState({
+    offsetX1: 0,
+    offsetX2: 0,
+    sliceY: 0,
+    sliceHeight: 0,
+    sliceOffset: 0,
+    noiseOpacity: 0,
+    isGlitching: false,
+  })
 
-// Noise function
-float noise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
+  const containerRef = useRef<HTMLDivElement>(null)
 
-    float a = hash(i);
-    float b = hash(i + vec2(1.0, 0.0));
-    float c = hash(i + vec2(0.0, 1.0));
-    float d = hash(i + vec2(1.0, 1.0));
-
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-}
-
-// Block-based glitch effect
-float blockNoise(vec2 p, float blockSize) {
-    vec2 blockPos = floor(p / blockSize) * blockSize;
-    return hash(blockPos);
-}
-
-// RGB Channel separation for chromatic aberration
-vec3 chromaticAberration(vec2 uv, float time, float intensity) {
-    float aberration = intensity * 0.01;
-
-    // Different offsets for each color channel
-    vec2 redOffset = vec2(aberration * sin(time * 3.0), 0.0);
-    vec2 greenOffset = vec2(0.0, aberration * cos(time * 2.0));
-    vec2 blueOffset = vec2(-aberration * sin(time * 1.5), aberration * cos(time * 4.0));
-
-    // Sample base colors (procedural pattern)
-    float redBase = noise(uv * 5.0 + redOffset);
-    float greenBase = noise(uv * 5.0 + greenOffset + 100.0);
-    float blueBase = noise(uv * 5.0 + blueOffset + 200.0);
-
-    return vec3(redBase, greenBase, blueBase);
-}
-
-// Digital corruption effect
-float digitalCorruption(vec2 uv, float time) {
-    // Create vertical stripes of corruption
-    float stripeNoise = hash(vec2(floor(uv.x * 50.0), floor(time * 10.0)));
-    float corruption = step(0.95, stripeNoise);
-
-    // Add horizontal scan line corruption
-    float scanCorruption = hash(vec2(floor(time * 20.0), floor(uv.y * 100.0)));
-    corruption += step(0.98, scanCorruption) * 0.5;
-
-    return corruption;
-}
-
-// Data moshing displacement
-vec2 dataMosh(vec2 uv, float time, float intensity) {
-    vec2 moshUV = uv;
-
-    // Create displacement blocks
-    float blockSize = 0.1;
-    vec2 blockIndex = floor(uv / blockSize);
-    float blockHash = hash(blockIndex + floor(time * 2.0));
-
-    if (blockHash > 0.9) {
-        // Random displacement
-        float displaceX = (hash(blockIndex + 123.0) - 0.5) * intensity * 0.1;
-        float displaceY = (hash(blockIndex + 456.0) - 0.5) * intensity * 0.1;
-        moshUV += vec2(displaceX, displaceY);
+  useEffect(() => {
+    let animationId: number | null = null
+    let timeoutId: number | null = null
+    
+    const scheduleNextGlitch = () => {
+      // Schedule the next glitch to occur in 30-60 seconds
+      const delay = 30000 + Math.random() * 30000
+      timeoutId = window.setTimeout(() => {
+        startGlitch()
+      }, delay)
     }
 
-    return moshUV;
-}
-
-void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
-    vec2 uv = fragCoord / iResolution.xy;
-    float time = iTime * u_speed;
-
-    // Apply data moshing displacement
-    vec2 moshUV = dataMosh(uv, time, u_distortion);
-
-    // Base chromatic aberration effect
-    vec3 color = chromaticAberration(moshUV, time, u_intensity);
-
-    // Add digital noise patterns
-    float digitalNoise = noise(moshUV * 20.0 + time);
-    float blockGlitch = blockNoise(moshUV, 0.05 + sin(time) * 0.02);
-
-    // Glitch color mixing
-    color = mix(color, vec3(blockGlitch), 0.3);
-    color += digitalNoise * 0.2;
-
-    // Scan line effect
-    float scanLine = sin(moshUV.y * iResolution.y * 0.5 * u_scanlines + time * 10.0);
-    scanLine = smoothstep(0.0, 1.0, scanLine * 0.5 + 0.5);
-    color *= (0.8 + scanLine * 0.4);
-
-    // Add horizontal glitch lines
-    float glitchLine = step(0.99, hash(vec2(floor(time * 30.0), floor(moshUV.y * 50.0))));
-    if (glitchLine > 0.0) {
-        // Horizontal displacement for glitch lines
-        float displacement = (hash(vec2(floor(time * 30.0), 0.0)) - 0.5) * 0.1;
-        vec2 glitchUV = vec2(moshUV.x + displacement, moshUV.y);
-        vec3 glitchColor = chromaticAberration(glitchUV, time, u_intensity * 2.0);
-        color = mix(color, glitchColor, 0.8);
+    const startGlitch = () => {
+      const glitchDuration = 100 + Math.random() * 200 * intensity
+      const startTime = performance.now()
+      let frameCount = 0
+      
+      const animate = (currentTime: number) => {
+        const elapsed = currentTime - startTime
+        
+        if (elapsed < glitchDuration) {
+          // Only update every 3rd frame for performance
+          frameCount++
+          if (frameCount % 3 === 0) {
+            const glitchIntensity = intensity * (Math.random() * 0.5 + 0.5)
+            
+            setGlitchState({
+              offsetX1: (Math.random() - 0.5) * 25 * glitchIntensity,
+              offsetX2: (Math.random() - 0.5) * 25 * glitchIntensity,
+              sliceY: Math.random() * 100,
+              sliceHeight: 2 + Math.random() * 10,
+              sliceOffset: (Math.random() - 0.5) * 40 * glitchIntensity,
+              noiseOpacity: 0.12 + Math.random() * 0.18 * glitchIntensity,
+              isGlitching: true,
+            })
+          }
+          
+          animationId = requestAnimationFrame(animate)
+        } else {
+          // Glitch finished, reset to calm state
+          setGlitchState({
+            offsetX1: 0,
+            offsetX2: 0,
+            sliceY: 0,
+            sliceHeight: 0,
+            sliceOffset: 0,
+            noiseOpacity: 0.02,
+            isGlitching: false,
+          })
+          animationId = null
+          // Schedule next glitch
+          scheduleNextGlitch()
+        }
+      }
+      
+      animationId = requestAnimationFrame(animate)
     }
 
-    // Color shifting and corruption
-    float colorCorruption = digitalCorruption(moshUV, time);
-    if (colorCorruption > 0.0) {
-        // Shift hue and invert colors
-        color.rgb = color.gbr; // Channel shift
-        color = 1.0 - color; // Invert
-        color *= vec3(1.0, 0.2, 0.8); // Cyberpunk pink/cyan tint
+    // Start the first glitch cycle
+    scheduleNextGlitch()
+
+    return () => {
+      if (animationId !== null) {
+        cancelAnimationFrame(animationId)
+      }
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId)
+      }
     }
+  }, [intensity])
 
-    // Apply overall color shifting
-    float hueShift = sin(time * u_colorShift) * 0.1;
-    color.r += hueShift;
-    color.g += hueShift * 0.5;
-    color.b -= hueShift * 0.3;
+  return (
+    <div
+      ref={containerRef}
+      className={cn("fixed inset-0 overflow-hidden bg-black", className)}
+    >
+      {/* Base layer */}
+      <div
+        className="absolute inset-0"
+        style={{
+          background: `
+            radial-gradient(ellipse at 30% 40%, ${color}15 0%, transparent 50%),
+            radial-gradient(ellipse at 70% 60%, ${color}10 0%, transparent 50%),
+            linear-gradient(180deg, #0a0a0f 0%, #12121a 50%, #0a0a12 100%)
+          `,
+        }}
+      />
 
-    // Add static noise
-    float staticNoise = hash(moshUV * 100.0 + time * 50.0);
-    color += (staticNoise - 0.5) * 0.1 * u_intensity;
+      {/* RGB Split layers */}
+      <div
+        className="pointer-events-none absolute inset-0 mix-blend-screen"
+        style={{
+          background: `radial-gradient(ellipse at 50% 50%, ${color}20 0%, transparent 60%)`,
+          transform: `translateX(${glitchState.offsetX1}px)`,
+          opacity: 0.8,
+        }}
+      />
+      <div
+        className="pointer-events-none absolute inset-0 mix-blend-screen"
+        style={{
+          background: `radial-gradient(ellipse at 50% 50%, #ff000018 0%, transparent 60%)`,
+          transform: `translateX(${-glitchState.offsetX2}px)`,
+          opacity: 0.6,
+        }}
+      />
 
-    // Pixelation effect
-    float pixelSize = 1.0 + floor(noise(vec2(time * 5.0)) * 3.0);
-    vec2 pixelUV = floor(moshUV * iResolution.xy / pixelSize) * pixelSize / iResolution.xy;
-    float pixelMix = step(0.95, noise(vec2(time * 3.0)));
-    color = mix(color, chromaticAberration(pixelUV, time, u_intensity), pixelMix * 0.3);
-
-    // Digital artifacts
-    float artifact = step(0.98, hash(moshUV * 200.0 + time * 100.0));
-    color += artifact * vec3(0.5, 1.0, 0.5) * u_intensity;
-
-    // Vignette with digital edge
-    float vignette = 1.0 - length(uv - 0.5) * 1.2;
-    vignette = mix(vignette, 1.0, 0.3); // Subtle vignette
-    color *= vignette;
-
-    // Clamp and output
-    color = clamp(color, 0.0, 1.0);
-
-    fragColor = vec4(color, 1.0);
-}
-`
-
-export const GlitchShaders = forwardRef<HTMLDivElement, GlitchShadersProps>(
-  (
-    {
-      className,
-      speed = 1.0,
-      intensity = 1.0,
-      distortion = 1.0,
-      colorShift = 1.0,
-      scanlines = 1.0,
-      ...props
-    },
-    ref,
-  ) => {
-    return (
-      <div className={cn("w-full h-full", className)} ref={ref} {...(props as any)}>
-        <Shader
-          fs={fragmentShader}
-          style={{ width: "100%", height: "100%" } as CSSStyleDeclaration}
-          uniforms={{
-            u_speed: { type: "1f", value: speed },
-            u_intensity: { type: "1f", value: intensity },
-            u_distortion: { type: "1f", value: distortion },
-            u_colorShift: { type: "1f", value: colorShift },
-            u_scanlines: { type: "1f", value: scanlines },
+      {/* Horizontal slice glitch */}
+      {glitchState.isGlitching && glitchState.sliceHeight > 0 && (
+        <div
+          className="pointer-events-none absolute inset-x-0"
+          style={{
+            top: `${glitchState.sliceY}%`,
+            height: `${glitchState.sliceHeight}%`,
+            background: `linear-gradient(90deg, transparent, ${color}30, transparent)`,
+            transform: `translateX(${glitchState.sliceOffset}px)`,
+            boxShadow: `0 0 10px ${color}50`,
           }}
         />
-      </div>
-    )
-  },
-)
+      )}
 
-GlitchShaders.displayName = "GlitchShaders"
+      {/* Noise overlay */}
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          opacity: glitchState.noiseOpacity,
+          backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E")`,
+        }}
+      />
 
-export default GlitchShaders
+      {/* Scanlines */}
+      {scanlines && (
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{
+            background: "repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px)",
+            opacity: 0.5,
+          }}
+        />
+      )}
+
+      {/* Glitch flash */}
+      {glitchState.isGlitching && Math.random() > 0.7 && (
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{
+            background: color,
+            opacity: 0.03,
+          }}
+        />
+      )}
+
+      {/* Vignette */}
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background: "radial-gradient(ellipse at center, transparent 0%, transparent 40%, rgba(0,0,0,0.8) 100%)",
+        }}
+      />
+
+      {/* Content layer */}
+      {children && <div className="relative z-10 h-full w-full">{children}</div>}
+    </div>
+  )
+}
+
+// Legacy export for backward compatibility
+export function Glitch({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <GlitchBackground className={className} color="#00e3ff" intensity={1.2} {...props} />
+}
